@@ -23,8 +23,7 @@ class MakeProjectListCommand extends Command
   protected $cacheBaseDirectory;
   protected $cacheDuration;
 
-  protected $domainHints = [];
-  protected $urlHints = [];
+  protected $hints = [];
   protected $markedAddresses = [];
 
   protected $address;
@@ -72,14 +71,8 @@ td
   font-weight: bold;
 }
 
-.hinted-domain, .hinted-url
-{
+.hinted {
   background-color: #FFFF99;
-}
-
-.hinted-domain.hinted-url
-{
-  background-color: #C5FF99;
 }
 
 .header
@@ -129,6 +122,12 @@ table td code.status
   font-weight: bold;
 
   background-color: #CCFFCC;
+}
+
+var.size {
+  white-space: nowrap;
+  font-style: normal;
+  font-family: monospace;
 }
 CSS;
 
@@ -183,19 +182,59 @@ CSS;
   {
     $hints = $this->input->getOption('hint');
 
-    $urls = [];
-    $domains = [];
+    $formattedHints = [];
+
+    $registerHint = function($type, array $options) use (&$formattedHints) {
+      $definition = [
+        'type' => $type,
+        'options' => $options,
+        'results' => []
+      ];
+
+      $formattedHints[] = $definition;
+    };
 
     foreach ($hints as $hint) {
-      if (strpos($hint, 'http') === 0) {
-        $urls[] = $hint;
+      if (starts_with($hint, 'r/')) {
+        $registerHint('regex', [
+          'pattern' => substr($hint, 1)
+        ]);
       } else {
-        $urls[] = $domains;
+        $parsed = parse_url($hint);
+
+        if ($parsed === false) {
+          $this->output->writeln(sprintf('<error>Cannot extract usable hint from (%s). Skipping.</error>', $hint));
+          continue;
+        }
+
+        if (array_key_exists('scheme', $parsed)) {
+          if (!in_array($parsed['scheme'], ['http', 'https'])) {
+            $this->output->writeln(sprintf('<error>Cannot hint url with non HTTP scheme (%s; %s). Skipping.', $hint, $parsed['scheme']));
+            continue;
+          }
+
+          $registerHint('url', [
+            // We don't need scheme further on.
+            'url' => $parsed['host'] . (array_key_exists('path', $parsed) ? $parsed['path'] : '')
+          ]);
+        } elseif (array_key_exists('path', $parsed) && count($parsed) === 1) {
+          $path = $parsed['path'];
+
+          // Check for domain.
+          if (strpos($path, '/') === false && substr_count($path, '.') >= 1) {
+            $registerHint('domain', [
+              'domain' => $path
+            ]);
+          } else {
+            $registerHint('substring', [
+              'needle' => $path
+            ]);
+          }
+        }
       }
     }
 
-    $this->domainHints = $domains;
-    $this->urlHints = $urls;
+    $this->hints = $formattedHints;
   }
 
   protected function setupMarks()
@@ -324,6 +363,8 @@ CSS;
         };
 
         $normalizedEntry = ['realpath' => $path, 'stat' => $entry, 'root' => false];
+        $duPath = $path;
+        $link = $entry['type'] === 3;
 
         if ($entry['type'] === 3) {
           $hops = $resolveLink($path);
@@ -336,7 +377,14 @@ CSS;
 
           $normalizedEntry['hops'] = $hops;
           $normalizedEntry['real'] = &$lastHop;
+          $duPath = $normalizedEntry['real']['realpath'];
         }
+
+        $size = $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('s-' . $this->address . '_' . $duPath), function () use ($sftp, $path) {
+          return $this->getRemoteSize($sftp, $path);
+        });
+
+        $link ? ($normalizedEntry['real']['size'] = $size) : ($normalizedEntry['size'] = $size);
 
         foreach ($roots as $_root) {
           if ($_root['realpath'] === $normalizedEntry['realpath']
@@ -377,6 +425,7 @@ CSS;
           'origin' => $origin,
           'baseUrl' => $baseUrl,
           'url' => $this->combineUrl($origin, $baseUrl),
+          'entry' => $entry
         ];
 
         if (array_key_exists('real', $entry) && $entry['real']['realpath'] !== $entry['realpath']) {
@@ -405,7 +454,7 @@ CSS;
       ];
     }
 
-    $this->generateResultHtml($results, $this->markedAddresses, $this->domainHints, $this->urlHints);
+    $this->generateResultHtml($results);
   }
 
   protected function loadKey($key, $password = null)
@@ -510,7 +559,7 @@ CSS;
 
   protected function testUrl($url)
   {
-    return $this->getCachedResult($this->cacheBaseDirectory . '/uc/' . str_slug($url), function () use ($url) {
+    return $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('u-' . $this->address . '_' .$url), function () use ($url) {
       $handle = curl_init($url);
 
       $ua = 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36';
@@ -549,7 +598,7 @@ CSS;
 
   protected function testHost($host)
   {
-    return $this->getCachedResult($this->cacheBaseDirectory . '/hc/' . str_slug($host), function () use ($host) {
+    return $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('h-' . $this->address . '_' . $host), function () use ($host) {
       return gethostbynamel($host);
     });
   }
@@ -574,11 +623,51 @@ CSS;
     return $back;
   }
 
-  protected function generateResultHtml($urls, $ourAddresses = array(), $hintedDomains = array(), $hintedUrls = array())
+  protected function getHumanHintType($type)
   {
-    $originalDomainHints = $hintedDomains;
-    $originalUrlHints = $hintedUrls;
+    switch ($type) {
+      case 'substring':
+        return 'virkne';
+        break;
 
+      case 'regex':
+        return 'datorizteiksme';
+        break;
+
+      case 'domain':
+        return 'domēns';
+        break;
+
+      case 'url':
+        return 'saite';
+    }
+  }
+
+  protected function generateHintDefinitionDisplay($definition)
+  {
+    $type = $definition['type'];
+    $humanType = ucfirst($this->getHumanHintType($type));
+
+    switch ($type) {
+      case 'substring':
+        return $humanType . ': <var class="hint substring">' . $definition['options']['needle'] . '</var>';
+        break;
+
+      case 'regex':
+        return $humanType . ': <var class="hint regex">'. $definition['options']['pattern'] .'</var>';
+        break;
+
+      case 'domain':
+        return $humanType . ': <var class="hint domain">'. $definition['options']['domain'] .'</var>';
+        break;
+
+      case 'url':
+        return $humanType . ': <var class="hint url">://'. $definition['options']['url'] .'</var>';
+    }
+  }
+
+  protected function generateResultHtml($urls)
+  {
     $totalUrls = count($urls);
     $currentUrl = 1;
 
@@ -601,7 +690,86 @@ CSS;
 
     $siteTable = $this->generateTableHeaders('Servera Mape', $dom);
     $body->appendChild($siteTable);
-    $this->generateResultRows($urls, $currentUrl, $totalUrls, $dom, $siteTable, $ourAddresses, $hintedDomains, $hintedUrls);
+    $this->generateResultRows($urls, $currentUrl, $totalUrls, $dom, $siteTable);
+
+    $siteTable->appendChild($this->generateSizeRow($urls, 'Kopā:', $dom));
+
+    $hintedUrls = array_flatten(array_filter(array_map(function ($hintDefinition) {
+      return $hintDefinition['results'];
+    }, $this->hints)), 1);
+
+    if (count($hintedUrls) > 0) {
+      $siteTable->appendChild($this->generateSizeRow($hintedUrls, 'Atzīmētās:', $dom));
+    }
+
+    if (count($this->hints) > 0) {
+      $requestedHintHeader = $dom->createElement('h2');
+      $requestedHintHeader->nodeValue = 'Kopā tika pieprasīta saikne ar šādiem nosacījumiem:';
+      $body->appendChild($requestedHintHeader);
+
+      $requestedList = $dom->createElement('ul');
+      $body->appendChild($requestedList);
+
+      foreach ($this->hints as $hintDefinition)
+      {
+        $listItem = $dom->createElement('li');
+        $hintFragment = $dom->createDocumentFragment();
+        $hintFragment->appendXML($this->generateHintDefinitionDisplay($hintDefinition));
+        $listItem->appendChild($hintFragment);
+        $requestedList->appendChild($listItem);
+      }
+    }
+
+    /*
+    foreach (['url', 'domain', 'substring', 'regex'] as $hintType) {
+      $hintsOfType = array_filter($this->hints, function ($hintDefinition) use ($hintType) {
+        return $value['type'] === $hintType;
+      });
+
+      $resolvedOfType = array_filter($hintsOfType, function ($hintDefinition) {
+        return count($hintDefinition['results']) > 0;
+      });
+
+      $unresolvedOfType = array_diff_key($hintsOfType, $resolvedOfType);
+
+      $resolvedHintHeader = $dom->createElement('h2');
+      $resolvedHintHeader->nodeValue = '('. ucfirst($hintType) .') Atrasta saikne šiem nosacījumiem:';
+      $body->appendChild($resolvedHintHeader);
+
+      $totalDomainHints = count($hintedDomains);
+      $currentDomainHint = 1;
+
+      $leftOverHintedDomainTable = $this->generateTableHeaders('Domēns', $dom);
+      $body->appendChild($leftOverHintedDomainTable);
+      $hintedDomainUrls = array_map(array($this, 'generateUrlDataFromDomain'), array_keys($hintedDomains));
+      $this->generateResultRows($hintedDomainUrls, $currentDomainHint, $totalDomainHints, $dom, $leftOverHintedDomainTable);
+    }
+
+    if (count($resolvedHints) > 0) {
+      $resolvedHintHeader = $dom->createElement('h2');
+      $resolvedHintHeader->nodeValue = 'Atrasta saikne šiem nosacījumiem:';
+      $body->appendChild($resolvedHintHeader);
+
+      $totalDomainHints = count($hintedDomains);
+      $currentDomainHint = 1;
+
+      $leftOverHintedDomainTable = $this->generateTableHeaders('Domēns', $dom);
+      $body->appendChild($leftOverHintedDomainTable);
+      $hintedDomainUrls = array_map(array($this, 'generateUrlDataFromDomain'), array_keys($hintedDomains));
+      $this->generateResultRows($hintedDomainUrls, $currentDomainHint, $totalDomainHints, $dom, $leftOverHintedDomainTable);
+    }
+
+    $unresolvedHints = array_diff_key($this->hints, $resolvedHints);
+
+    if (count($unresolvedHints) > 0) {
+
+    }
+    */
+
+    /*
+    $hintedDomains = array_filter($this->domainHints, function ($resolvedProjects) {
+      return count($domain) > 0;
+    });
 
     if (count($hintedDomains))
     {
@@ -614,10 +782,11 @@ CSS;
 
       $leftOverHintedDomainTable = $this->generateTableHeaders('Domēns', $dom);
       $body->appendChild($leftOverHintedDomainTable);
-      $this->generateResultRows(array_map(array($this, 'folderizeDomain'), $hintedDomains), $currentDomainHint, $totalDomainHints, $dom, $leftOverHintedDomainTable, $ourAddresses, $hintedDomains, $hintedUrls);
+      $hintedDomainUrls = array_map(array($this, 'generateUrlDataFromDomain'), array_keys($hintedDomains));
+      $this->generateResultRows($hintedDomainUrls, $currentDomainHint, $totalDomainHints, $dom, $leftOverHintedDomainTable);
     }
 
-    if (count($originalDomainHints))
+    if (count($this->domainHints))
     {
       $requestedDomainHeader = $dom->createElement('h2');
       $requestedDomainHeader->nodeValue = 'Kopā tika pieprasīta domēnu saikne šādiem domēniem:';
@@ -626,13 +795,17 @@ CSS;
       $requestedList = $dom->createElement('ul');
       $body->appendChild($requestedList);
 
-      foreach ($originalDomainHints as $originalHint)
+      foreach ($originalDomainHints as $originalHint => $resolvedHints)
       {
         $listItem = $dom->createElement('li');
         $listItem->nodeValue = $originalHint;
         $requestedList->appendChild($listItem);
       }
     }
+
+    $hintedUrls = array_filter($this->urlHints, function ($resolvedProjects) {
+      return count($resolvedProjects) > 0;
+    });
 
     if (count($hintedUrls))
     {
@@ -645,10 +818,11 @@ CSS;
 
       $leftOverHintedUrlTable = $this->generateTableHeaders('Mape', $dom);
       $body->appendChild($leftOverHintedUrlTable);
-      $this->generateResultRows(array_map(array($this, 'folderizeUrl'), $hintedUrls), $currentUrlHint, $totalUrlHints, $dom, $leftOverHintedUrlTable, $ourAddresses, $hintedDomains, $hintedUrls);
+      $hintedUrlUrls = array_map(array($this, 'generateUrlDataFromUrl'), array_keys($hintedUrls));
+      $this->generateResultRows($hintedUrlUrls, $currentUrlHint, $totalUrlHints, $dom, $leftOverHintedUrlTable);
     }
 
-    if (count($originalUrlHints))
+    if (count($this->urlHints))
     {
       $requestedUrlHeader = $dom->createElement('h2');
       $requestedUrlHeader->nodeValue = 'Kopā tika pieprasīta ceļu saikne šādiem ceļiem:';
@@ -657,15 +831,47 @@ CSS;
       $requestedList = $dom->createElement('ul');
       $body->appendChild($requestedList);
 
-      foreach ($originalUrlHints as $originalHint)
+      foreach ($originalUrlHints as $originalHint => $resolvedHints)
       {
         $listItem = $dom->createElement('li');
         $listItem->nodeValue = $originalHint;
         $requestedList->appendChild($listItem);
       }
     }
+    */
 
     $dom->saveHTMLFile($this->address . '-' . time() . '.html');
+  }
+
+  protected function generateSizeRow($urls, $firstColumn, $dom)
+  {
+    $totalsRow = $dom->createElement('tr');
+    $totalsDirectoryNode = $dom->createElement('td');
+    $totalsDirectoryNode->nodeValue = $firstColumn;
+    $totalsRow->appendChild($totalsDirectoryNode);
+
+    $totalSizeNode = $dom->createElement('td');
+    $totalSize = array_reduce($urls, function ($accumulated, $currentUrl) {
+      $urlSize = (
+        isset($currentUrl['url']['entry']['real']) ?
+        $currentUrl['url']['entry']['real']['size'] :
+        $currentUrl['url']['entry']['size']
+      )['size'];
+
+      return $accumulated + $urlSize;
+    }, 0);
+
+    $totalSizeFragment = $dom->createDocumentFragment();
+    $totalSizeFragment->appendXML('<var class="size">'. $this->formatBytes($totalSize) .'</var>');
+    $totalSizeNode->appendChild($totalSizeFragment);
+    $totalSizeNode->setAttribute('class', 'size');
+    $totalsRow->appendChild($totalSizeNode);
+
+    $fillerNode = $dom->createElement('td');
+    $fillerNode->setAttribute('colspan', 3);
+    $totalsRow->appendChild($fillerNode);
+
+    return $totalsRow;
   }
 
   protected function generateTableHeaders($firstColumn, $dom)
@@ -680,31 +886,36 @@ CSS;
     $directoryHeading = $dom->createElement('th');
     $directoryHeading->nodeValue = $firstColumn;
     $directoryHeading->setAttribute('class', 'directory');
+    $headerRow->appendChild($directoryHeading);
+
+    // Size header.
+    $sizeHeading = $dom->createElement('th');
+    $sizeHeading->nodeValue = 'Izmērs';
+    $sizeHeading->setAttribute('class', 'size');
+    $headerRow->appendChild($sizeHeading);
 
     // HTTP header.
     $httpHeader = $dom->createElement('th');
     $httpHeader->nodeValue = 'HTTP';
     $httpHeader->setAttribute('class', 'http');
+    $headerRow->appendChild($httpHeader);
 
     // HTTPS header.
     $httpsHeader = $dom->createElement('th');
     $httpsHeader->nodeValue = 'HTTPS';
     $httpsHeader->setAttribute('class', 'https');
+    $headerRow->appendChild($httpsHeader);
 
     // Addresses header.
     $addressesHeader = $dom->createElement('th');
     $addressesHeader->nodeValue = 'Adreses';
     $addressesHeader->setAttribute('class', 'addresses');
-
-    $headerRow->appendChild($directoryHeading);
-    $headerRow->appendChild($httpHeader);
-    $headerRow->appendChild($httpsHeader);
     $headerRow->appendChild($addressesHeader);
 
     return $table;
   }
 
-  protected function generateResultRows($urls, &$current, $total, $dom, $table, $ourAddresses, &$hintedDomains, &$hintedUrls)
+  protected function generateResultRows($urls, &$current, $total, $dom, $table)
   {
     $singleLineInfoFormat = '<code class="info">%s</code>';
     $multiLineInfoFormat = '<pre class="info">%s</pre>';
@@ -720,36 +931,35 @@ CSS;
 
       $urlData = $url['data'];
       $directory = $url['directory'];
+      $external = array_key_exists('external', $url) ? $url['external'] : false;
 
       $current++;
-
-      $hintedDomain = empty($urlData['error']) ? in_array($urlData['hostname'], $hintedDomains) : false;
-
-      if ($hintedDomain) {
-        if (($hintedDomainKey = array_search($urlData['hostname'], $hintedDomains)) >= 0) {
-          unset($hintedDomains[$hintedDomainKey]);
-        }
-      }
-
-      $urlForHinting = preg_replace('/^https?:\/\//', 'http://', $urlData['url']);
-      if (stripos($urlForHinting, 'http://') !== 0) {
-        $urlForHinting = 'http://' . $urlForHinting;
-      }
-
-      $hintedUrl = in_array($urlForHinting, $hintedUrls);
-
-      if ($hintedUrl) {
-        if (($hintedUrlKey = array_search($urlForHinting, $hintedUrls)) >= 0) {
-          unset($hintedUrls[$hintedUrlKey]);
-        }
-      }
 
       $directoryNode = $dom->createElement('td');
       $directoryFragment = $dom->createDocumentFragment();
       $directoryFragment->appendXML($this->extractDirectoryPageData($directory, $url));
       $directoryNode->appendChild($directoryFragment);
-      $directoryNode->setAttribute('class', implode(' ', array_filter(['directory', $hintedDomain ? 'hinted-domain' : null, $hintedUrl ? 'hinted-url' : null])));
+
+      $directoryClasses = ['directory'];
+      $this->appendHintClasses($directoryClasses, $this->checkHints($url));
+
+      $directoryNode->setAttribute('class', implode(' ', $directoryClasses));
       $row->appendChild($directoryNode);
+
+      $sizeNode = $dom->createElement('td');
+      $sizeData = $external ? ['size' => null] : (
+        isset($url['url']['entry']['real']) ?
+        $url['url']['entry']['real']['size'] :
+        $url['url']['entry']['size']
+      );
+      $sizeFragment = $dom->createDocumentFragment();
+      $sizeFragment->appendXML('<var class="size">'. $this->formatBytes($sizeData['size']) .'</var>');
+      $sizeNode->appendChild($sizeFragment);
+      $sizeNode->setAttribute('class', 'size');
+      if (array_key_exists('error', $sizeData)) {
+        $sizeNode->setAttribute('title', $sizeData['error']);
+      }
+      $row->appendChild($sizeNode);
 
       $httpValue = $httpsValue = sprintf($singleLineInfoFormat, $unsetMessage);
       $httpClass = $httpsClass = '';
@@ -787,7 +997,7 @@ CSS;
         if (array_key_exists('addresses', $urlData) && !empty($urlData['addresses']))
         {
           $addressesValue = sprintf($multiLineInfoFormat, $this->getAddressesValue($urlData['addresses']));
-          $addressesClass = $this->getAddressesClass($ourAddresses, $urlData['addresses']);
+          $addressesClass = $this->getAddressesClass($this->markedAddresses, $urlData['addresses']);
         }
         else
         {
@@ -816,6 +1026,60 @@ CSS;
       $addressesNode->appendChild($addressesFragment);
       $addressesNode->setAttribute('class', $addressesClass . ' addresses');
       $row->appendChild($addressesNode);
+    }
+  }
+
+  protected function checkHints($url)
+  {
+    $data = $url['data'];
+
+    $hints = [];
+
+    // No hints if error.
+    if (!empty($data['fatal'])) {
+      return $hints;
+    }
+
+    $urlStructure = parse_url('http://' . $data['url']);
+
+    foreach ($this->hints as $hintIndex => &$hintDefinition) {
+      $found = false;
+
+      switch ($type = $hintDefinition['type']) {
+        case 'substring':
+          $found = str_contains($data['url'], $hintDefinition['options']['needle']);
+          break;
+
+        case 'regex':
+          $found = preg_match($hintDefinition['options']['pattern'], $data['url']);
+          break;
+
+        case 'domain':
+          $found = $urlStructure['host'] === $hintDefinition['options']['domain'];
+          break;
+
+        case 'url':
+          $found = starts_with($data['url'], $hintDefinition['options']['url']);
+          break;
+      }
+
+      if ($found) {
+        $hints[] = &$hintDefinition;
+        $hintDefinition['results'][] = &$url;
+      }
+    }
+
+    return $hints;
+  }
+
+  protected function appendHintClasses(&$classList, $hints)
+  {
+    if (count($hints) > 0) {
+      array_push($classList, 'hinted');
+
+      foreach ($hints as $hintDefinition) {
+        array_push($classList, 'hinted-' . $hintDefinition['type']);
+      }
     }
   }
 
@@ -896,10 +1160,86 @@ CSS;
       '<span class="emphasis public">$1</span>'
     ), $directory);
 
-    if (array_key_exists('sourcepath', $url['url'])) {
-      $result .= ' <samp>=&gt;</samp> ' . $url['url']['sourcepath'];
+    $external = array_key_exists('external', $url) ? $url['external'] : false;
+
+    if (!$external) {
+      $directoryPath = array_key_exists('sourcepath', $url['url']) ? $url['url']['sourcepath'] : $url['url']['path'];
+      $result = '<span title="Uz servera: '. $directoryPath .'">'. $result .'</span>';
     }
 
     return $result;
+  }
+
+  protected function formatBytes($bytes, $precision = 2, $si = false)
+  {
+    if (is_null($bytes)) {
+      return htmlspecialchars('<NULL>');
+    }
+
+    $groupSize = $si ? 1000 : 1024;
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+    $bytes = max($bytes, 0);
+    $pow = floor(($bytes ? log($bytes) : 0) / log($groupSize));
+    $pow = min($pow, count($units) - 1);
+    $bytes /= pow($groupSize, $pow);
+
+    return round($bytes, $precision) . ' ' . $units[$pow];
+  }
+
+  protected function getRemoteSize(SFTP $sftp, $path)
+  {
+    $sftp->enableQuietMode();
+
+    $stdout = $sftp->exec('du -sb ' . $path);
+
+    $exit = $sftp->getExitStatus();
+
+    if ($exit) {
+      $error = $sftp->getStdError();
+      $sftp->disableQuietMode();
+      return ['size' => 0, 'error' => $error];
+    }
+
+    $sftp->disableQuietMode();
+
+    $parts = preg_split('/\s+?/', $stdout);
+    $size = intval($parts[0], 10);
+
+    return ['size' => $size];
+  }
+
+  protected function generateUrlDataFromDomain($domain)
+  {
+    $normalizedUrl = $this->combineUrl($domain);
+
+    return [
+      'url' => [
+        'origin' => $domain,
+        'baseUrl' => '',
+        'url' => $normalizedUrl
+      ],
+      'data' => $this->testUrlsData($normalizedUrl),
+      'directory' => $normalizedUrl,
+      'external' => true
+    ];
+  }
+
+  protected function generateUrlDataFromUrl($url)
+  {
+    $parsed = parse_url($url);
+
+    $normalizedUrl = $this->combineUrl($parsed['path'], $parsed['host']);
+
+    return [
+      'url' => [
+        'origin' => $parsed['path'],
+        'baseUrl' => $parsed['host'],
+        'url' => $normalizedUrl
+      ],
+      'data' => $this->testUrlsData($normalizedUrl),
+      'directory' => $normalizedUrl,
+      'external' => true
+    ];
   }
 }
