@@ -703,6 +703,7 @@ CSS;
 
     if (count($hintedUrls) > 0) {
       // TODO: Fix reference error.
+      // https://stackoverflow.com/questions/3307409/php-pass-by-reference-in-foreach
       $siteTable->appendChild($this->generateSizeRow($hintedUrls, 'Atzīmētās:', $dom));
     }
 
