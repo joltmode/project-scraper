@@ -412,6 +412,9 @@ CSS;
       });
     }
 
+    // Unset the reference.
+    unset($root);
+
     $urls = [];
 
     foreach ($roots as $root) {
@@ -699,6 +702,7 @@ CSS;
     }, $this->hints)), 1);
 
     if (count($hintedUrls) > 0) {
+      // TODO: Fix reference error.
       $siteTable->appendChild($this->generateSizeRow($hintedUrls, 'Atzīmētās:', $dom));
     }
 
@@ -1029,7 +1033,7 @@ CSS;
     }
   }
 
-  protected function checkHints($url)
+  protected function checkHints(&$url)
   {
     $data = $url['data'];
 
@@ -1068,6 +1072,8 @@ CSS;
         $hintDefinition['results'][] = &$url;
       }
     }
+
+    unset($hintDefinition);
 
     return $hints;
   }
