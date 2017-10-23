@@ -321,8 +321,10 @@ CSS;
       ];
     }
 
+    $populatedRoots = [];
+
     // Go through all of the provided roots and resolve folders.
-    foreach ($roots as &$root) {
+    foreach ($roots as $root) {
       foreach ($sftp->rawlist($folder = $root['realpath']) as $entry) {
         $filename = $entry['filename'];
 
@@ -355,7 +357,7 @@ CSS;
             $hops = [];
           }
 
-          $hops[] = ['realpath' => $linkPath, 'stat' => $stat];
+          array_push($hops, ['realpath' => $linkPath, 'stat' => $stat]);
 
           // Still a link? Recurse.
           if ($stat['type'] === 3) {
@@ -371,7 +373,7 @@ CSS;
 
         if ($entry['type'] === 3) {
           $hops = $resolveLink($path);
-          $lastHop = &$hops[count($hops) - 1];
+          $lastHop = $hops[count($hops) - 1];
 
           // We have resolved to a file, not interested.
           if ($lastHop['stat']['type'] === 1) {
@@ -379,7 +381,7 @@ CSS;
           }
 
           $normalizedEntry['hops'] = $hops;
-          $normalizedEntry['real'] = &$lastHop;
+          $normalizedEntry['real'] = $lastHop;
           $duPath = $normalizedEntry['real']['realpath'];
         }
 
@@ -413,14 +415,13 @@ CSS;
       usort($root['entries'], function ($a, $b) {
         return strcmp($a['realpath'], $b['realpath']);
       });
-    }
 
-    // Unset the reference.
-    unset($root);
+      $populatedRoots[] = $root;
+    }
 
     $urls = [];
 
-    foreach ($roots as $root) {
+    foreach ($populatedRoots as $root) {
       $baseUrl = $root['baseUrl'];
 
       foreach ($root['entries'] as $entry) {
@@ -710,8 +711,6 @@ CSS;
     }, $this->hints)), 1);
 
     if (count($hintedUrls) > 0) {
-      // TODO: Fix reference error.
-      // https://stackoverflow.com/questions/3307409/php-pass-by-reference-in-foreach
       $siteTable->appendChild($this->generateSizeRow($hintedUrls, 'Atzīmētās:', $dom));
     }
 
@@ -1057,7 +1056,7 @@ CSS;
     }
   }
 
-  protected function checkHints(&$url)
+  protected function checkHints($url)
   {
     $data = $url['data'];
 
@@ -1070,7 +1069,7 @@ CSS;
 
     $urlStructure = parse_url('http://' . $data['url']);
 
-    foreach ($this->hints as $hintIndex => &$hintDefinition) {
+    foreach ($this->hints as $hintIndex => $hintDefinition) {
       $found = false;
 
       switch ($type = $hintDefinition['type']) {
@@ -1092,12 +1091,10 @@ CSS;
       }
 
       if ($found) {
-        $hints[] = &$hintDefinition;
-        $hintDefinition['results'][] = &$url;
+        $hints[] = $hintDefinition;
+        $this->hints[$hintIndex]['results'][] = $url;
       }
     }
-
-    unset($hintDefinition);
 
     return $hints;
   }
