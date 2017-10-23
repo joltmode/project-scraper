@@ -685,6 +685,11 @@ CSS;
     $head = $dom->createElement('head');
     $dom->documentElement->insertBefore($head, $body);
 
+    // Title.
+    $title = $dom->createElement('title');
+    $title->nodeValue = sprintf('Servera %s projektu izraksts @ %s', $this->address, date('H:i:s Y.m.d.'));
+    $head->appendChild($title);
+
     // Embed.
     $stylesheet = $dom->createElement('style');
     $stylesheet->setAttribute('type', 'text/css');
