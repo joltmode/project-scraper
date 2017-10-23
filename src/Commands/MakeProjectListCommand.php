@@ -7,6 +7,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Question\ConfirmationQuestion;
 use phpseclib\Net\SSH2;
 use phpseclib\Net\SFTP;
 use phpseclib\Crypt\RSA;
@@ -149,6 +150,8 @@ CSS;
 
       ->addOption('cache', null, InputOption::VALUE_REQUIRED, 'Base directory to use for cache.', getcwd())
       ->addOption('cache-ttl', null, InputOption::VALUE_REQUIRED, 'Cache TTL (in seconds).', 60 * 60 * 5)
+
+      ->addOption('overwrite', null, InputOption::VALUE_NONE, 'Should the output file be overwritten in if exists?')
 
       // ->addOption('format', null, InputOption::VALUE_REQUIRED, 'Format used to export results.', 'html')
 
@@ -318,8 +321,10 @@ CSS;
       ];
     }
 
+    $populatedRoots = [];
+
     // Go through all of the provided roots and resolve folders.
-    foreach ($roots as &$root) {
+    foreach ($roots as $root) {
       foreach ($sftp->rawlist($folder = $root['realpath']) as $entry) {
         $filename = $entry['filename'];
 
@@ -352,7 +357,7 @@ CSS;
             $hops = [];
           }
 
-          $hops[] = ['realpath' => $linkPath, 'stat' => $stat];
+          array_push($hops, ['realpath' => $linkPath, 'stat' => $stat]);
 
           // Still a link? Recurse.
           if ($stat['type'] === 3) {
@@ -368,7 +373,7 @@ CSS;
 
         if ($entry['type'] === 3) {
           $hops = $resolveLink($path);
-          $lastHop = &$hops[count($hops) - 1];
+          $lastHop = $hops[count($hops) - 1];
 
           // We have resolved to a file, not interested.
           if ($lastHop['stat']['type'] === 1) {
@@ -376,7 +381,7 @@ CSS;
           }
 
           $normalizedEntry['hops'] = $hops;
-          $normalizedEntry['real'] = &$lastHop;
+          $normalizedEntry['real'] = $lastHop;
           $duPath = $normalizedEntry['real']['realpath'];
         }
 
@@ -410,11 +415,13 @@ CSS;
       usort($root['entries'], function ($a, $b) {
         return strcmp($a['realpath'], $b['realpath']);
       });
+
+      $populatedRoots[] = $root;
     }
 
     $urls = [];
 
-    foreach ($roots as $root) {
+    foreach ($populatedRoots as $root) {
       $baseUrl = $root['baseUrl'];
 
       foreach ($root['entries'] as $entry) {
@@ -662,7 +669,7 @@ CSS;
         break;
 
       case 'url':
-        return $humanType . ': <var class="hint url">://'. $definition['options']['url'] .'</var>';
+        return $humanType . ': <var class="hint url">'. $definition['options']['url'] .'</var>';
     }
   }
 
@@ -681,6 +688,11 @@ CSS;
 
     $head = $dom->createElement('head');
     $dom->documentElement->insertBefore($head, $body);
+
+    // Title.
+    $title = $dom->createElement('title');
+    $title->nodeValue = sprintf('Servera %s projektu izraksts @ %s', $this->address, date('H:i:s Y.m.d.'));
+    $head->appendChild($title);
 
     // Embed.
     $stylesheet = $dom->createElement('style');
@@ -840,7 +852,22 @@ CSS;
     }
     */
 
-    $dom->saveHTMLFile($this->address . '-' . time() . '.html');
+    $file = $this->address . '.html';
+    $save = true;
+
+    if (file_exists($file) && empty($this->input->getOption('overwrite'))) {
+      $questionHelper = $this->getHelper('question');
+
+      $question = new ConfirmationQuestion('File already exists, overwrite? ', true);
+
+      if (!$questionHelper->ask($this->input, $this->output, $question)) {
+        $save = false;
+      }
+    }
+
+    if ($save) {
+      $dom->saveHTMLFile($this->address . '.html');
+    }
   }
 
   protected function generateSizeRow($urls, $firstColumn, $dom)
@@ -1042,7 +1069,7 @@ CSS;
 
     $urlStructure = parse_url('http://' . $data['url']);
 
-    foreach ($this->hints as $hintIndex => &$hintDefinition) {
+    foreach ($this->hints as $hintIndex => $hintDefinition) {
       $found = false;
 
       switch ($type = $hintDefinition['type']) {
@@ -1064,8 +1091,8 @@ CSS;
       }
 
       if ($found) {
-        $hints[] = &$hintDefinition;
-        $hintDefinition['results'][] = &$url;
+        $hints[] = $hintDefinition;
+        $this->hints[$hintIndex]['results'][] = $url;
       }
     }
 
