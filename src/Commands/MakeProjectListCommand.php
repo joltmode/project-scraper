@@ -850,7 +850,22 @@ CSS;
     }
     */
 
-    $dom->saveHTMLFile($this->address . '-' . time() . '.html');
+    $file = $this->address . '.html';
+    $save = true;
+
+    if (file_exists($file)) {
+      $questionHelper = $this->getHelper('question');
+
+      $question = new ConfirmationQuestion('File already exists, overwrite?', true);
+
+      if (!$questionHelper->ask($this->input, $this->output, $question)) {
+        $save = false;
+      }
+    }
+
+    if ($save) {
+      $dom->saveHTMLFile($this->address . '.html');
+    }
   }
 
   protected function generateSizeRow($urls, $firstColumn, $dom)
