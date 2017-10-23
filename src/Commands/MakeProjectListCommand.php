@@ -7,6 +7,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Question\ConfirmationQuestion;
 use phpseclib\Net\SSH2;
 use phpseclib\Net\SFTP;
 use phpseclib\Crypt\RSA;
@@ -149,6 +150,8 @@ CSS;
 
       ->addOption('cache', null, InputOption::VALUE_REQUIRED, 'Base directory to use for cache.', getcwd())
       ->addOption('cache-ttl', null, InputOption::VALUE_REQUIRED, 'Cache TTL (in seconds).', 60 * 60 * 5)
+
+      ->addOption('overwrite', null, InputOption::VALUE_NONE, 'Should the output file be overwritten in if exists?')
 
       // ->addOption('format', null, InputOption::VALUE_REQUIRED, 'Format used to export results.', 'html')
 
@@ -853,10 +856,10 @@ CSS;
     $file = $this->address . '.html';
     $save = true;
 
-    if (file_exists($file)) {
+    if (file_exists($file) && empty($this->input->getOption('overwrite'))) {
       $questionHelper = $this->getHelper('question');
 
-      $question = new ConfirmationQuestion('File already exists, overwrite?', true);
+      $question = new ConfirmationQuestion('File already exists, overwrite? ', true);
 
       if (!$questionHelper->ask($this->input, $this->output, $question)) {
         $save = false;
