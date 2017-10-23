@@ -665,7 +665,7 @@ CSS;
         break;
 
       case 'url':
-        return $humanType . ': <var class="hint url">://'. $definition['options']['url'] .'</var>';
+        return $humanType . ': <var class="hint url">'. $definition['options']['url'] .'</var>';
     }
   }
 
