@@ -27,6 +27,8 @@ class MakeProjectListCommand extends Command
   protected $hints = [];
   protected $markedAddresses = [];
 
+  protected $sftp;
+
   protected $address;
 
   const HTML_TABLE_STYLE = <<<CSS
@@ -167,7 +169,7 @@ CSS;
     $this->output = $output;
 
     $this->cacheBaseDirectory = $this->input->getOption('cache');
-    $output->writeln(sprintf('<info>Cache directory: %s</info>', $this->cacheBaseDirectory));
+    $this->output->writeln(sprintf('<info>Cache directory: %s</info>', $this->cacheBaseDirectory));
 
     $cacheDuration = $this->input->getOption('cache-ttl');
 
@@ -253,6 +255,7 @@ CSS;
         $ips[] = $ip4;
       } else {
         $this->output->writeln(sprintf('<error>Cannot resolve marked address (%s). Skipping.</error>', $mark));
+        continue;
       }
     }
 
@@ -263,15 +266,31 @@ CSS;
   {
     set_time_limit(0);
 
-    $key = $input->getOption('key');
-    $password = $input->getOption('password');
+    $this->globalizeSettings($input, $output);
+    $this->connect();
+
+    $roots = $this->resolveRoots();
+
+    $populatedRoots = $this->populateRoots($roots);
+
+    $urls = $this->extractUrls($populatedRoots);
+
+    $results = $this->testUrls($urls);
+
+    $this->generateResultHtml($results);
+  }
+
+  protected function connect()
+  {
+    $key = $this->input->getOption('key');
+    $password = $this->input->getOption('password');
 
     if (!$key && !$password) {
       throw new InvalidArgumentException('You have to specify key or password to connect to the remote.');
     }
 
-    $address = $input->getArgument('address');
-    $port = intval($input->getOption('port'), 10);
+    $address = $this->input->getArgument('address');
+    $port = intval($this->input->getOption('port'), 10);
 
     $sftp = new SFTP($address, $port);
 
@@ -283,19 +302,24 @@ CSS;
       $access = $password;
     }
 
-    if (!$sftp->login($username = $input->getOption('username'), $access)) {
+    if (!$sftp->login($username = $this->input->getOption('username'), $access)) {
       throw new RuntimeException(sprintf('Could not connect to remote host (%s:%d) using the given username (%s) and access method (%s).', $address, $port, $username, ($access instanceof RSA) ? 'key:' . realpath($key) : 'password'));
     }
 
-    $this->globalizeSettings($input, $output);
     $this->address = $address;
 
     $destination = implode(':', [$address, $port]);
-    $output->writeln(sprintf('<info>Connected to %s</info>', $destination));
+    $this->output->writeln(sprintf('<info>Connected to %s</info>', $destination));
 
+    $this->sftp = $sftp;
+  }
+
+  protected function resolveRoots() {
     $roots = [];
 
-    foreach ($input->getArgument('root') as $root) {
+    $this->output->writeln('Resolving roots...');
+
+    foreach ($this->input->getArgument('root') as $root) {
       $folder = $root;
       $baseUrl = null;
 
@@ -305,15 +329,17 @@ CSS;
       }
 
       if ($folder[0] !== '/') {
-        $output->writeln(sprintf('<error>Folder (%s) specified with a relative path instead of absolute. Skipping.</error>', $folder));
+        $this->output->writeln(sprintf('<error>Folder (%s) specified with a relative path instead of absolute. Skipping.</error>', $folder));
         continue;
       }
 
       // Resolve realpath and exclude if not found.
-      if (!($realpath = $sftp->realpath($folder))) {
-        $output->writeln(sprintf('<error>The folder (%s) could not be found on the remote server. Skipping.</error>', $folder));
+      if (!($realpath = $this->sftp->realpath($folder))) {
+        $this->output->writeln(sprintf('<error>The folder (%s) could not be found on the remote server. Skipping.</error>', $folder));
         continue;
       }
+
+      $this->output->writeln(sprintf('Resolved %s to %s.', $root, $realpath));
 
       $roots[] = [
         'realpath' => $realpath,
@@ -321,11 +347,28 @@ CSS;
       ];
     }
 
+    $this->output->writeln('Roots resolved.');
+
+    return $roots;
+  }
+
+  protected function populateRoots(array $roots) {
     $populatedRoots = [];
+
+    $this->output->writeln('Populating roots...');
 
     // Go through all of the provided roots and resolve folders.
     foreach ($roots as $root) {
-      foreach ($sftp->rawlist($folder = $root['realpath']) as $entry) {
+      $entries = $this->sftp->rawlist($folder = $root['realpath']);
+
+      if (!is_array($entries)) {
+        $this->output->writeln(sprintf('<error>No entries could be found under (%s), maybe inexistant root? Skipping.</error>', $folder));
+        continue;
+      }
+
+      $this->output->writeln(sprintf('Found %d entries under %s, filtering...', count($entries), $folder));
+
+      foreach ($entries as $entry) {
         $filename = $entry['filename'];
 
         // Ignore dot paths and files.
@@ -334,10 +377,10 @@ CSS;
         }
 
         // Construct a relative path and resolve to realpath.
-        $path = $sftp->realpath($folder . '/' . $filename);
+        $path = $this->sftp->realpath($folder . '/' . $filename);
 
-        $resolveLink = function ($path, &$hops = null) use ($sftp, &$resolveLink) {
-          $link = $sftp->readlink($path);
+        $resolveLink = function ($path, &$hops = null) use (&$resolveLink) {
+          $link = $this->sftp->readlink($path);
 
           // If absolute path gets resolved, it's already resolved.
           if ($link[0] === '/') {
@@ -346,11 +389,11 @@ CSS;
           // Also resolve.
           } else {
             $dirname = dirname($path);
-            $linkPath = $sftp->realpath($dirname . '/' . $link);
+            $linkPath = $this->sftp->realpath($dirname . '/' . $link);
           }
 
           // Link resolved, lstat it, in case it's another link.
-          $stat = $sftp->lstat($linkPath);
+          $stat = $this->sftp->lstat($linkPath);
 
           // On first request, initialize hops.
           if (is_null($hops)) {
@@ -383,10 +426,12 @@ CSS;
           $normalizedEntry['hops'] = $hops;
           $normalizedEntry['real'] = $lastHop;
           $duPath = $normalizedEntry['real']['realpath'];
+
+          $this->output->writeln(sprintf('Resolved %s as a shortcut to %s.', $path, $duPath));
         }
 
-        $size = $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('s-' . $this->address . '_' . $duPath), function () use ($sftp, $path) {
-          return $this->getRemoteSize($sftp, $path);
+        $size = $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('s-' . $this->address . '_' . $duPath), function () use ($path) {
+          return $this->getRemoteSize($this->sftp, $path);
         });
 
         $link ? ($normalizedEntry['real']['size'] = $size) : ($normalizedEntry['size'] = $size);
@@ -402,6 +447,7 @@ CSS;
 
         // Do not test roots themselves.
         if ($normalizedEntry['root']) {
+          $this->output->writeln(sprintf('%s is a root itself. Skipping.', $path));
           continue;
         }
 
@@ -412,6 +458,8 @@ CSS;
         $root['entries'][] = $normalizedEntry;
       }
 
+      $this->output->writeln(sprintf('%d%% (%d/%d; -%d) usable in %s.', round(($usableEntries = count($root['entries'])) / ($totalEntries = count($entries)) * 100, 2), $usableEntries, $totalEntries, $totalEntries - $usableEntries, $folder));
+
       usort($root['entries'], function ($a, $b) {
         return strcmp($a['realpath'], $b['realpath']);
       });
@@ -419,6 +467,11 @@ CSS;
       $populatedRoots[] = $root;
     }
 
+    return $populatedRoots;
+  }
+
+  protected function extractUrls(array $populatedRoots)
+  {
     $urls = [];
 
     foreach ($populatedRoots as $root) {
@@ -443,10 +496,19 @@ CSS;
       }
     }
 
+    return $urls;
+  }
+
+  protected function testUrls(array $urls)
+  {
     $results = [];
 
-    foreach ($urls as $url) {
+    $total = count($urls);
+
+    foreach ($urls as $index => $url) {
       $directory = array_key_exists('directory', $url) ? $url['directory'] : $url['url'];
+
+      $this->output->writeln(sprintf('Testing URL (%d/%d): %s', $index + 1, $total, $url['url']));
 
       $data = $this->testUrlsData($url['url']);
 
@@ -461,7 +523,7 @@ CSS;
       ];
     }
 
-    $this->generateResultHtml($results);
+    return $results;
   }
 
   protected function loadKey($key, $password = null)
@@ -1225,6 +1287,9 @@ CSS;
     if ($exit) {
       $error = $sftp->getStdError();
       $sftp->disableQuietMode();
+
+      $this->output->writeln('Failed to resolved remote size for %s.', $path);
+
       return ['size' => 0, 'error' => $error];
     }
 
@@ -1232,6 +1297,8 @@ CSS;
 
     $parts = preg_split('/\s+?/', $stdout);
     $size = intval($parts[0], 10);
+
+    $this->output->writeln('Resolved remote size: %s takes up %s.', $path, $this->formatBytes($size));
 
     return ['size' => $size];
   }
