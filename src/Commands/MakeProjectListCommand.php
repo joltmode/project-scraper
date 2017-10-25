@@ -24,6 +24,8 @@ class MakeProjectListCommand extends Command
   protected $cacheBaseDirectory;
   protected $cacheDuration;
 
+  protected $force = false;
+
   protected $hints = [];
   protected $markedAddresses = [];
 
@@ -155,6 +157,8 @@ CSS;
 
       ->addOption('overwrite', null, InputOption::VALUE_NONE, 'Should the output file be overwritten in if exists?')
 
+      ->addOption('force', null, InputOption::VALUE_NONE, 'Ignore caches')
+
       // ->addOption('format', null, InputOption::VALUE_REQUIRED, 'Format used to export results.', 'html')
 
       ->addArgument('address', InputArgument::REQUIRED, 'Remote server address to connect to.')
@@ -178,6 +182,8 @@ CSS;
     } else {
       $this->cacheDuration = (float) $cacheDuration;
     }
+
+    $this->force = !empty($this->input->getOption('force'));
 
     $this->setupHints();
     $this->setupMarks();
@@ -613,7 +619,7 @@ CSS;
       mkdir($directory, 0755, true);
     }
 
-    if (file_exists($store) && $this->cacheDuration > 0 && time() - filemtime($store) < $this->cacheDuration)
+    if (!$this->force && file_exists($store) && $this->cacheDuration > 0 && time() - filemtime($store) < $this->cacheDuration)
     {
       return json_decode(file_get_contents($store), true);
     }
