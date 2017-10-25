@@ -1294,7 +1294,7 @@ CSS;
       $error = $sftp->getStdError();
       $sftp->disableQuietMode();
 
-      $this->output->writeln('Failed to resolved remote size for %s.', $path);
+      $this->output->writeln(sprintf('Failed to resolved remote size for %s.', $path));
 
       return ['size' => 0, 'error' => $error];
     }
@@ -1304,7 +1304,7 @@ CSS;
     $parts = preg_split('/\s+?/', $stdout);
     $size = intval($parts[0], 10);
 
-    $this->output->writeln('Resolved remote size: %s takes up %s.', $path, $this->formatBytes($size));
+    $this->output->writeln(sprintf('Resolved remote size: %s takes up %s.', $path, $this->formatBytes($size)));
 
     return ['size' => $size];
   }
