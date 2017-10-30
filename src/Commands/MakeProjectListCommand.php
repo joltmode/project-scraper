@@ -373,12 +373,14 @@ CSS;
       }
 
       $this->output->writeln(sprintf('Found %d entries under %s, filtering...', count($entries), $folder));
+      $standardSkips = 0;
 
       foreach ($entries as $entry) {
         $filename = $entry['filename'];
 
         // Ignore dot paths and files.
         if ($filename === '.' || $filename === '..' || $entry['type'] === 1) {
+          $standardSkips++;
           continue;
         }
 
@@ -464,7 +466,12 @@ CSS;
         $root['entries'][] = $normalizedEntry;
       }
 
-      $this->output->writeln(sprintf('%d%% (%d/%d; -%d) usable in %s.', round(($usableEntries = count($root['entries'])) / ($totalEntries = count($entries)) * 100, 2), $usableEntries, $totalEntries, $totalEntries - $usableEntries, $folder));
+      // Check once more for entries, might be that there are none.
+      if (!array_key_exists('entries', $root)) {
+        $root['entries'] = [];
+      }
+
+      $this->output->writeln(sprintf('%d%% (%d/%d; -%d) usable in %s.', round(($usableEntries = count($root['entries'])) / ($totalEntries = count($entries) - $standardSkips) * 100, 2), $usableEntries, $totalEntries, $totalEntries - $usableEntries, $folder));
 
       usort($root['entries'], function ($a, $b) {
         return strcmp($a['realpath'], $b['realpath']);
