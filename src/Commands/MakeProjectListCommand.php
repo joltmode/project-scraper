@@ -159,6 +159,8 @@ CSS;
 
       ->addOption('force', null, InputOption::VALUE_NONE, 'Ignore caches')
 
+      ->addOption('exclude', null, InputOption::VALUE_IS_ARRAY | InputOption::VALUE_REQUIRED, 'Directories that should be ignored.')
+
       // ->addOption('format', null, InputOption::VALUE_REQUIRED, 'Format used to export results.', 'html')
 
       ->addArgument('address', InputArgument::REQUIRED, 'Remote server address to connect to.')
@@ -275,9 +277,11 @@ CSS;
     $this->globalizeSettings($input, $output);
     $this->connect();
 
-    $roots = $this->resolveRoots();
+    $excludes = $this->resolveExcludes();
 
-    $populatedRoots = $this->populateRoots($roots);
+    $roots = $this->resolveRoots($excludes);
+
+    $populatedRoots = $this->populateRoots($roots, $excludes);
 
     $urls = $this->extractUrls($populatedRoots);
 
@@ -320,7 +324,36 @@ CSS;
     $this->sftp = $sftp;
   }
 
-  protected function resolveRoots() {
+  protected function resolveExcludes() {
+    $excludes = [];
+
+    $this->output->writeln('Resolving excludes...');
+
+    foreach ($this->input->getOption('exclude') as $exclude) {
+      $folder = $exclude;
+
+      if ($folder[0] !== '/') {
+        $this->output->writeln(sprintf('<error>Folder (%s) specified with a relative path instead of absolute. Skipping.</error>', $folder));
+        continue;
+      }
+
+      // Resolve realpath and exclude if not found.
+      if (!($realpath = $this->sftp->realpath($folder))) {
+        $this->output->writeln(sprintf('<error>The folder (%s) could not be found on the remote server. Skipping.</error>', $folder));
+        continue;
+      }
+
+      $this->output->writeln(sprintf('Resolved %s to %s.', $exclude, $realpath));
+
+      $excludes[] = $realpath;
+    }
+
+    $this->output->writeln('Excludes resolved.');
+
+    return $excludes;
+  }
+
+  protected function resolveRoots(array $excludes = []) {
     $roots = [];
 
     $this->output->writeln('Resolving roots...');
@@ -345,6 +378,11 @@ CSS;
         continue;
       }
 
+      if (in_array($realpath, $excludes)) {
+        $this->output->writeln(sprintf('%s in excludes list. Skipping.', $realpath));
+        continue;
+      }
+
       $this->output->writeln(sprintf('Resolved %s to %s.', $root, $realpath));
 
       $roots[] = [
@@ -358,7 +396,7 @@ CSS;
     return $roots;
   }
 
-  protected function populateRoots(array $roots) {
+  protected function populateRoots(array $roots, array $excludes = []) {
     $populatedRoots = [];
 
     $this->output->writeln('Populating roots...');
@@ -438,8 +476,13 @@ CSS;
           $this->output->writeln(sprintf('Resolved %s as a shortcut to %s.', $path, $duPath));
         }
 
-        $size = $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('s-' . $this->address . '_' . $duPath), function () use ($path) {
-          return $this->getRemoteSize($this->sftp, $path);
+        if (in_array($path, $excludes) || in_array($duPath, $excludes)) {
+          $this->output->writeln(sprintf('%s (%s) in excludes list. Skipping.', $duPath, $path));
+          continue;
+        }
+
+        $size = $this->getCachedResult($this->cacheBaseDirectory . '/' . str_slug('s-' . $this->address . '_' . $duPath), function () use ($duPath) {
+          return $this->getRemoteSize($this->sftp, $duPath);
         });
 
         $link ? ($normalizedEntry['real']['size'] = $size) : ($normalizedEntry['size'] = $size);
